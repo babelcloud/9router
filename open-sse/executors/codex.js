@@ -5,7 +5,7 @@ import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
 } from "../services/oauthCredentialManager.js";
-import { normalizeResponsesInput } from "../translator/formats/responsesApi.js";
+import { normalizeResponsesInput, normalizeStatelessResponseInput } from "../translator/formats/responsesApi.js";
 import { fetchImageAsBase64 } from "../translator/concerns/image.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { DEFAULT_RETRY_CONFIG, HTTP_STATUS, resolveRetryEntry } from "../config/runtimeConfig.js";
@@ -23,9 +23,6 @@ const CODEX_SSE_USER_OUTPUT_PATTERNS = [
 ];
 const CODEX_SSE_PEEK_BYTES = 256 * 1024;
 const CODEX_MODEL_CAPACITY_MESSAGE = "Selected model is at capacity. Please try a different model.";
-
-// Server-generated item id prefixes that Codex /responses cannot resolve when store=false
-const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
 
 // Hosted tool types that Codex/OpenAI Responses executes server-side
 const CODEX_HOSTED_TOOL_TYPES = new Set([
@@ -54,19 +51,31 @@ function convertSystemToDeveloperRole(body) {
   }
 }
 
-// Strip invalid or stored item IDs before sending a store=false request.
-function stripStoredItemReferences(body) {
-  if (!Array.isArray(body.input)) return;
-  body.input = body.input.filter((item) => {
-    if (typeof item === "string" && SERVER_ID_PATTERN.test(item)) return false;
-    if (item && typeof item === "object" && !Array.isArray(item)) {
-      if (item.type === "item_reference") return false;
-      // function_call.id is optional input metadata; call_id carries tool-result correlation.
-      if (item.type === "function_call") delete item.id;
-      if (typeof item.id === "string" && SERVER_ID_PATTERN.test(item.id)) delete item.id;
-    }
-    return true;
-  });
+function cloneCodexRequestBody(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  const cloned = { ...body };
+  if (Array.isArray(body.input)) {
+    cloned.input = body.input.map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+      return {
+        ...item,
+        ...(Array.isArray(item.content)
+          ? { content: item.content.map((part) => (
+            part && typeof part === "object" && !Array.isArray(part) ? { ...part } : part
+          )) }
+          : {}),
+      };
+    });
+  }
+  if (Array.isArray(body.tools)) {
+    cloned.tools = body.tools.map((tool) => (
+      tool && typeof tool === "object" && !Array.isArray(tool) ? { ...tool } : tool
+    ));
+  }
+  if (body.reasoning && typeof body.reasoning === "object" && !Array.isArray(body.reasoning)) {
+    cloned.reasoning = { ...body.reasoning };
+  }
+  return cloned;
 }
 
 // Flatten Chat-Completions tool shape into Responses flat format + filter unsupported tools
@@ -253,15 +262,16 @@ export class CodexExecutor extends BaseExecutor {
   }
 
   async execute(args) {
-    const imgCount = Array.isArray(args.body?.input) ? args.body.input.reduce((n, it) => n + (Array.isArray(it.content) ? it.content.filter(c => c.type === "image_url").length : 0), 0) : 0;
-    const inputLen = Array.isArray(args.body?.input) ? args.body.input.length : 0;
+    const requestArgs = { ...args, body: cloneCodexRequestBody(args.body) };
+    const imgCount = Array.isArray(requestArgs.body?.input) ? requestArgs.body.input.reduce((n, it) => n + (Array.isArray(it.content) ? it.content.filter(c => c.type === "image_url").length : 0), 0) : 0;
+    const inputLen = Array.isArray(requestArgs.body?.input) ? requestArgs.body.input.length : 0;
     dbg("CODEX", `execute start | inputItems=${inputLen} | images=${imgCount} | sessionId=${this._currentSessionId || "pending"}`);
     if (imgCount > 0) {
       const t0 = Date.now();
-      await this.prefetchImages(args.body);
+      await this.prefetchImages(requestArgs.body);
       dbg("CODEX", `prefetchImages done | ${Date.now() - t0}ms`);
     } else {
-      await this.prefetchImages(args.body);
+      await this.prefetchImages(requestArgs.body);
     }
 
     // Retry loop for SSE-level overloaded errors (200 OK body contains event: error)
@@ -270,7 +280,7 @@ export class CodexExecutor extends BaseExecutor {
     const { attempts, delayMs } = resolveRetryEntry(retryConfig[503]);
     let attempt = 0;
     while (true) {
-      const result = await super.execute(args);
+      const result = await super.execute(requestArgs);
       const peek = await this._peekSseTransientError(result.response);
       if (!peek.matched) {
         // Replace body with re-assembled stream (prefix bytes already read + rest)
@@ -388,6 +398,7 @@ export class CodexExecutor extends BaseExecutor {
    * Image fetching is handled separately in prefetchImages() so this stays sync.
    */
   transformRequest(model, body, stream, credentials) {
+    body = cloneCodexRequestBody(body);
     this._isCompact = !!body._compact;
     delete body._compact;
     // Resolve conversation-stable session_id (priority: body → assistant-text → workspace → machine)
@@ -403,8 +414,14 @@ export class CodexExecutor extends BaseExecutor {
 
     // Keep system prompts in body.input as role=developer so they stay in the cacheable prefix
     convertSystemToDeveloperRole(body);
-    // Strip invalid function-call IDs and stored references that Codex cannot resolve with store=false
-    stripStoredItemReferences(body);
+    // Strip optional tool item IDs and stored references that store=false cannot resolve.
+    const normalizedInput = normalizeStatelessResponseInput(body.input);
+    body.input = normalizedInput.input;
+    const strippedIds = normalizedInput.strippedIds;
+    if (Object.keys(strippedIds).length > 0) {
+      const counts = Object.entries(strippedIds).map(([type, count]) => `${type}=${count}`).join(" ");
+      dbg("CODEX", `normalized stateless item ids | ${counts}`);
+    }
     // Flatten function tools + drop unsupported types
     normalizeCodexTools(body);
 

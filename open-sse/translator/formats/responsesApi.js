@@ -1,5 +1,39 @@
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
 
+const STORED_ITEM_REFERENCE_PATTERN = /^(?:at|msg|amsg|rs|lsh|fc|tsc|fco|ctc|ctco|tso|ws|ig|cmp|resp)_/;
+const UNTRUSTED_STATELESS_ID_TYPES = new Set([
+  RESPONSES_ITEM.FUNCTION_CALL,
+  RESPONSES_ITEM.FUNCTION_CALL_OUTPUT,
+  RESPONSES_ITEM.CUSTOM_TOOL_CALL,
+  RESPONSES_ITEM.CUSTOM_TOOL_CALL_OUTPUT,
+]);
+
+/**
+ * Remove stored references and untrusted item IDs from a stateless Responses replay.
+ * Tool call/output IDs are always omitted because call_id is the correlation key.
+ * Every other item is preserved because its ID may carry provider-specific state.
+ */
+export function normalizeStatelessResponseInput(input) {
+  const strippedIds = {};
+  if (!Array.isArray(input)) return { input, strippedIds };
+
+  const normalizedInput = input.flatMap((item) => {
+    if (typeof item === "string" && STORED_ITEM_REFERENCE_PATTERN.test(item)) return [];
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [item];
+    if (item.type === RESPONSES_ITEM.ITEM_REFERENCE) return [];
+    if (!Object.hasOwn(item, "id")) return [item];
+
+    const type = item.type;
+    if (!UNTRUSTED_STATELESS_ID_TYPES.has(type)) return [item];
+    const normalizedItem = { ...item };
+    delete normalizedItem.id;
+    strippedIds[type] = (strippedIds[type] || 0) + 1;
+    return [normalizedItem];
+  });
+
+  return { input: normalizedInput, strippedIds };
+}
+
 /**
  * Normalize Responses API input to array format.
  * Accepts string or array, returns array of message items.
