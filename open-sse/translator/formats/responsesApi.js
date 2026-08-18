@@ -9,8 +9,8 @@ const STATELESS_CALL_ITEM_TYPES = new Set([
 ]);
 
 /**
- * Remove stored references and optional call item IDs from a stateless Responses replay.
- * call_id remains the correlation key; IDs on every other item type are preserved.
+ * Remove stored references and incompatible item IDs from a stateless Responses replay.
+ * call_id remains the correlation key; valid message IDs and other item IDs are preserved.
  */
 export function normalizeStatelessResponseInput(input) {
   if (!Array.isArray(input)) return input;
@@ -19,7 +19,10 @@ export function normalizeStatelessResponseInput(input) {
     if (typeof item === "string" && STORED_ITEM_REFERENCE_PATTERN.test(item)) return [];
     if (!item || typeof item !== "object" || Array.isArray(item)) return [item];
     if (item.type === RESPONSES_ITEM.ITEM_REFERENCE) return [];
-    if (!STATELESS_CALL_ITEM_TYPES.has(item.type) || !Object.hasOwn(item, "id")) return [item];
+    if (!Object.hasOwn(item, "id")) return [item];
+    const hasInvalidMessageId = item.type === RESPONSES_ITEM.MESSAGE
+      && (typeof item.id !== "string" || !item.id.startsWith("msg"));
+    if (!STATELESS_CALL_ITEM_TYPES.has(item.type) && !hasInvalidMessageId) return [item];
 
     const normalizedItem = { ...item };
     delete normalizedItem.id;
