@@ -15,6 +15,7 @@ const { afterEach, describe, it } = testApi;
 
 const require = createRequire(import.meta.url);
 const {
+  assertNoBuildHome,
   assertRequiredApiArtifacts,
   copyStandaloneBuild,
   mergeServerArtifacts,
@@ -71,14 +72,24 @@ describe("CLI build server artifacts", () => {
       writeFixture(standaloneDir, "server.js", "standalone server");
       writeFixture(
         standaloneDir,
+        "cli/.build-home/.9router/jwt-secret",
+        "build-only secret",
+      );
+      writeFixture(
+        standaloneDir,
         ".next-cli-build/server/app/api/v1/chat/completions/route.js",
         "standalone chat route",
       );
       createCompleteServer(buildDistDir);
 
       copyStandaloneBuild(appDir, buildDistDir, cliAppDir);
+      assertNoBuildHome(cliAppDir);
       mergeServerArtifacts(buildDistDir, cliAppDir);
       assertRequiredApiArtifacts(cliAppDir);
+      assert.equal(
+        fs.existsSync(path.join(cliAppDir, "cli/.build-home")),
+        false,
+      );
 
       const packagedServer = path.join(cliAppDir, ".next-cli-build", "server");
       assert.equal(
@@ -95,6 +106,16 @@ describe("CLI build server artifacts", () => {
       );
     });
   }
+
+  it("rejects a build-only HOME that reaches the package output", () => {
+    const cliAppDir = createTempDir();
+    writeFixture(cliAppDir, "nested/.build-home/.9router/jwt-secret", "secret");
+
+    assert.throws(
+      () => assertNoBuildHome(cliAppDir),
+      (error) => error.message.includes(path.join("nested", ".build-home")),
+    );
+  });
 
   it("merges idempotently without removing standalone-generated files", () => {
     const root = createTempDir();
