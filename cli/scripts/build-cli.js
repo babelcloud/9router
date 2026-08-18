@@ -20,6 +20,7 @@ const EXCLUDE_PATTERNS = [
   ".env",           // Environment files
   ".env.local",
   ".env.*.local",
+  ".build-home",    // Build-only HOME can contain generated DB and auth secrets
   "*.log",          // Log files
   "tmp",            // Temp files
   ".DS_Store",      // macOS files
@@ -121,6 +122,27 @@ function copyStandaloneBuild(appDir, buildDistDir, cliAppDir) {
   }
 }
 
+function assertNoBuildHome(cliAppDir) {
+  const leakedBuildHomes = [];
+
+  function visit(dir) {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.name === ".build-home") {
+        leakedBuildHomes.push(entryPath);
+      } else if (entry.isDirectory()) {
+        visit(entryPath);
+      }
+    }
+  }
+
+  visit(cliAppDir);
+  if (leakedBuildHomes.length > 0) {
+    throw new Error(`Build-only HOME leaked into CLI package:\n${leakedBuildHomes.join("\n")}`);
+  }
+}
+
 function mergeServerArtifacts(buildDistDir, cliAppDir) {
   const serverSrc = path.join(buildDistDir, "server");
   const serverDest = path.join(cliAppDir, buildDistDirName, "server");
@@ -203,9 +225,9 @@ function buildCliPackage() {
   console.log("3️⃣  Copying Next.js standalone build to app/cli/app...");
   try {
     copyStandaloneBuild(appDir, buildDistDir, cliAppDir);
+    assertNoBuildHome(cliAppDir);
   } catch (error) {
-    console.error("❌ Next.js standalone build not found under .next/standalone");
-    console.error("Expected either .next/standalone/server.js or .next/standalone/app/");
+    console.error(`❌ Failed to prepare Next.js standalone build: ${error.message}`);
     process.exit(1);
   }
   console.log("✅ Copied standalone build\n");
@@ -214,9 +236,12 @@ function buildCliPackage() {
   const customServerSrc = path.join(appDir, "custom-server.js");
   if (fs.existsSync(customServerSrc)) {
     fs.copyFileSync(customServerSrc, path.join(cliAppDir, "custom-server.js"));
+    assertNoBuildHome(cliAppDir);
     console.log("✅ Copied custom-server.js\n");
   } else {
-    console.warn("⚠️  custom-server.js not found — server will run without real-IP injection\n");
+    console.error("❌ custom-server.js not found — without it no request can be proven local,");
+    console.error("   so the packaged CLI would demand an API key for its own dashboard and /v1.");
+    process.exit(1);
   }
 
   // Step 3b: Ensure sql.js (pure JS fallback) bundled in app/cli/app/node_modules.
@@ -253,6 +278,7 @@ function buildCliPackage() {
     fs.rmSync(betterDir, { recursive: true, force: true });
     console.log("✅ Stripped better-sqlite3 (lives in ~/.9router/runtime)");
   }
+  assertNoBuildHome(cliAppDir);
   console.log("");
 
   // Step 4: Copy static files
@@ -262,6 +288,7 @@ function buildCliPackage() {
   const staticDest = path.join(cliAppDir, buildDistDirName, "static");
   if (fs.existsSync(staticSrcResolved) || fs.existsSync(staticSrc)) {
     copyRecursive(fs.existsSync(staticSrcResolved) ? staticSrcResolved : staticSrc, staticDest);
+    assertNoBuildHome(cliAppDir);
     console.log("✅ Copied static files\n");
   } else {
     console.log("⏭️  No static files found\n");
@@ -273,6 +300,7 @@ function buildCliPackage() {
   const publicDest = path.join(cliAppDir, "public");
   if (fs.existsSync(publicSrc)) {
     copyRecursive(publicSrc, publicDest);
+    assertNoBuildHome(cliAppDir);
     console.log("✅ Copied public folder\n");
   } else {
     console.log("⏭️  No public folder found\n");
@@ -285,6 +313,7 @@ function buildCliPackage() {
   const vendorChunksDest = path.join(cliAppDir, buildDistDirName, "server", "vendor-chunks");
   if (fs.existsSync(vendorChunksSrcResolved) || fs.existsSync(vendorChunksSrc)) {
     copyRecursive(fs.existsSync(vendorChunksSrcResolved) ? vendorChunksSrcResolved : vendorChunksSrc, vendorChunksDest);
+    assertNoBuildHome(cliAppDir);
     console.log("✅ Copied vendor-chunks\n");
   } else {
     console.log("⏭️  No vendor-chunks found\n");
@@ -294,6 +323,7 @@ function buildCliPackage() {
   // is trace-pruned and can omit route modules or chunks loaded dynamically.
   console.log("6️⃣ b Copying complete server artifacts...");
   mergeServerArtifacts(buildDistDir, cliAppDir);
+  assertNoBuildHome(cliAppDir);
   assertRequiredApiArtifacts(cliAppDir);
   console.log("✅ Copied complete server artifacts\n");
 
@@ -303,6 +333,7 @@ function buildCliPackage() {
   const mitmDest = path.join(cliAppDir, "src", "mitm");
   if (fs.existsSync(mitmSrc)) {
     copyRecursive(mitmSrc, mitmDest);
+    assertNoBuildHome(cliAppDir);
     console.log("✅ Copied MITM files\n");
   } else {
     console.log("⏭️  No MITM files found\n");
@@ -314,6 +345,7 @@ function buildCliPackage() {
   const updaterDest = path.join(cliAppDir, "src", "lib", "updater");
   if (fs.existsSync(updaterSrc)) {
     copyRecursive(updaterSrc, updaterDest);
+    assertNoBuildHome(cliAppDir);
     console.log("✅ Copied updater files\n");
   } else {
     console.log("⏭️  No updater files found\n");
@@ -329,6 +361,8 @@ function buildCliPackage() {
     process.exit(1);
   }
 
+  assertNoBuildHome(cliAppDir);
+
   console.log("✨ CLI package build completed!");
   console.log(`📁 Output: ${cliAppDir}`);
 
@@ -342,6 +376,7 @@ function buildCliPackage() {
 }
 
 module.exports = {
+  assertNoBuildHome,
   assertRequiredApiArtifacts,
   copyStandaloneBuild,
   mergeServerArtifacts,
