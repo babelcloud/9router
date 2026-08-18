@@ -53,17 +53,49 @@ describe("CodexExecutor stateless item IDs", () => {
     });
   });
 
-  it("preserves IDs and payloads on non-call items", () => {
+  it("removes incompatible message IDs while preserving valid and unrelated item IDs", () => {
     const source = [
       { type: "message", id: "msg_history_1", role: "assistant", content: [{ type: "output_text", text: "continue" }] },
       { type: "message", id: "item_message_1", role: "user", content: [{ type: "input_text", text: "again" }] },
+      { type: "message", id: 42, role: "user", content: [{ type: "input_text", text: "number" }] },
+      { type: "message", id: null, role: "user", content: [{ type: "input_text", text: "null" }] },
       { type: "reasoning", id: "rs_history_1", encrypted_content: "ENCRYPTED_REASONING" },
       { type: "reasoning", id: "item_reasoning_1", summary: [{ type: "summary_text", text: "summary" }] },
       { type: "future_response_item", id: "item_future_1", payload: "PAYLOAD" },
       { id: "item_implicit_message_1", role: "user", content: "hello" },
     ];
 
-    expect(transformInput(source)).toEqual(source);
+    expect(transformInput(source)).toEqual([
+      source[0],
+      { type: "message", role: "user", content: [{ type: "input_text", text: "again" }] },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "number" }] },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "null" }] },
+      ...source.slice(4),
+    ]);
+  });
+
+  it("normalizes the reported invalid message ID at input index 201", () => {
+    const history = Array.from({ length: 201 }, (_, index) => ({
+      type: "message",
+      id: `msg_history_${index}`,
+      role: "user",
+      content: [{ type: "input_text", text: `step ${index}` }],
+    }));
+    history.push({
+      type: "message",
+      id: "item_37f0c3784d2ee9169f06f5bd",
+      role: "assistant",
+      content: [{ type: "output_text", text: "continue" }],
+    });
+
+    const input = transformInput(history);
+
+    expect(input[200].id).toBe("msg_history_200");
+    expect(input[201]).toEqual({
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "continue" }],
+    });
   });
 
   it("removes stored item references while preserving ordinary input", () => {
