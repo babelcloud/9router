@@ -108,12 +108,16 @@ export function extractThinking(body) {
 // at the call-site where intent is snapshotted before format translation.
 export const captureThinking = extractThinking;
 
-// Resolve thinking format: provider override > capability > derive(targetFormat).
+const NATIVE_ONLY_FORMATS = new Set(["gemini-level", "gemini-budget", "claude-budget", "claude-adaptive", "kiro"]);
+
 function resolveFormat(targetFormat, model, provider) {
   const providerFmt = provider ? PROVIDERS[provider]?.thinkingFormat : null;
   if (providerFmt) return providerFmt;
   const caps = getCapabilitiesForModel(provider, model);
-  if (caps.thinkingFormat) return caps.thinkingFormat;
+  const isOpenAIWire = targetFormat === "openai" || targetFormat === "openai-responses";
+  if (caps.thinkingFormat && !(isOpenAIWire && NATIVE_ONLY_FORMATS.has(caps.thinkingFormat))) {
+    return caps.thinkingFormat;
+  }
   return FORMAT_TO_NATIVE[targetFormat] || "openai";
 }
 
@@ -241,17 +245,17 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels) {
     case "claude-adaptive": {
       // disabled must NOT carry display (Anthropic rejects display on type:"disabled").
       if (none && canDisable) { body.thinking = { type: "disabled" }; break; }
-      // output_config.effort alone does NOT turn thinking on: Anthropic requires
-      // an explicit thinking:{type:"adaptive"} on Opus 4.6/4.7/4.8 and Sonnet 4.6
-      // ("thinking is off unless you explicitly set it"), and Anthropic-compatible
-      // shims (e.g. GitHub Copilot /v1/messages) default thinking off even for
-      // Sonnet 5. Send both fields — the documented adaptive-thinking shape.
       const level = toLevel(eff);
       body.output_config = { effort: level === "xhigh" ? "high" : level };
+      // Models that can disable thinking need the explicit adaptive switch.
+      // Permanently adaptive models such as Fable 5.1 accept effort directly.
       // Opus 4.7/4.8/Sonnet5/Fable5/Mythos5 default thinking.display to "omitted",
       // so explicitly request summarized to keep reasoning summary flowing to clients.
-      // Harmless on 4.6/Sonnet4.6 where "summarized" is already the default.
-      body.thinking = { type: "adaptive", display: "summarized" };
+      if (canDisable) {
+        body.thinking = { type: "adaptive", display: "summarized" };
+      } else {
+        delete body.thinking;
+      }
       break;
     }
     case "claude-budget": {
