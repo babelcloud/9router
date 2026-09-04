@@ -4,6 +4,7 @@ import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
 import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
+import { decloakStreamChunk } from "./claudeCloaking.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
@@ -30,6 +31,7 @@ const STREAM_MODE = {
  * @param {string} options.sourceFormat - Client format (for translate mode)
  * @param {string} options.provider - Provider name
  * @param {object} options.reqLogger - Request logger instance
+ * @param {Map|null} options.toolNameMap - Cloaked → original tool names (OAuth Claude)
  * @param {string} options.model - Model name
  * @param {string} options.connectionId - Connection ID for usage tracking
  * @param {object} options.body - Request body (for input token estimation)
@@ -144,6 +146,19 @@ export function createSSEStream(options = {}) {
 
               // Ensure OpenAI-required fields are present on streaming chunks (Letta compat)
               let fieldsInjected = false;
+
+              // Same-format Claude streaming never hits translateResponse(), so
+              // OAuth-cloaked tool names (CLAUDE_TOOL_SUFFIX / "_ide") leak unless
+              // we restore them here. Only rewrite the line when the name changes
+              // — otherwise the original bytes are forwarded below.
+              if (toolNameMap?.size) {
+                const decloaked = decloakStreamChunk(parsed, toolNameMap);
+                if (decloaked !== parsed) {
+                  Object.assign(parsed, decloaked);
+                  fieldsInjected = true;
+                }
+              }
+
               if (parsed.choices !== undefined) {
                 if (!parsed.object) { parsed.object = "chat.completion.chunk"; fieldsInjected = true; }
                 if (!parsed.created) { parsed.created = Math.floor(Date.now() / 1000); fieldsInjected = true; }
@@ -387,6 +402,22 @@ export function createSSEStream(options = {}) {
             if (buffer.startsWith("data:") && !buffer.startsWith("data: ")) {
               output = "data: " + buffer.slice(5);
             }
+            // Tail without a trailing newline still has to be decloaked —
+            // a content_block_start can be the last buffered line.
+            if (toolNameMap?.size && output.startsWith("data:")) {
+              const payload = output.slice(5).trim();
+              if (payload && payload !== "[DONE]") {
+                try {
+                  const parsed = JSON.parse(payload);
+                  const decloaked = decloakStreamChunk(parsed, toolNameMap);
+                  if (decloaked !== parsed) {
+                    output = `data: ${JSON.stringify(decloaked)}`;
+                  }
+                } catch {
+                  // keep original tail
+                }
+              }
+            }
             reqLogger?.appendConvertedChunk?.(output);
             controller.enqueue(sharedEncoder.encode(output));
           }
@@ -504,11 +535,12 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, toolNameMap = null) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
     provider,
     reqLogger,
+    toolNameMap,
     model,
     connectionId,
     body,
