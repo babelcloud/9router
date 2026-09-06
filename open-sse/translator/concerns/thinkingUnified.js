@@ -246,7 +246,7 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels) {
       // disabled must NOT carry display (Anthropic rejects display on type:"disabled").
       if (none && canDisable) { body.thinking = { type: "disabled" }; break; }
       const level = toLevel(eff);
-      body.output_config = { effort: level === "xhigh" ? "high" : level };
+      body.output_config = { effort: level === "xhigh" || level === "auto" ? "high" : level };
       // Models that can disable thinking need the explicit adaptive switch.
       // Permanently adaptive models such as Fable 5.1 accept effort directly.
       // Opus 4.7/4.8/Sonnet5/Fable5/Mythos5 default thinking.display to "omitted",
