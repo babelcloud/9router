@@ -104,7 +104,7 @@ describe("applyThinking per provider format", () => {
   it("claude adaptive thinking maps auto effort to a supported level", () => {
     const out = apply("claude", "claude-opus-4.7", { thinking: { type: "adaptive" } }, "claude");
     expect(out.output_config).toEqual({ effort: "high" });
-    expect(out.thinking).toEqual({ type: "adaptive" });
+    expect(out.thinking).toEqual({ type: "adaptive", display: "summarized" });
   });
   it("permanently adaptive Claude maps auto effort without adding a thinking switch", () => {
     const out = apply("claude", "claude-fable-5-1", { thinking: { type: "adaptive" } }, "claude");
