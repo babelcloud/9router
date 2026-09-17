@@ -7,8 +7,14 @@ import {
   CODEX_REQUEST_SCHEMA_PARAM_ROOTS,
   CODEX_ITEM_ID_PARAM_PATTERN,
   CODEX_ITEM_ID_MESSAGE_PATTERN,
+  CLAUDE_SCHEMA_FIELD_MESSAGE_PATTERN,
+  CLAUDE_BETA_HEADER_MESSAGE_PATTERN,
+  CLAUDE_INVALID_PROMPT_MESSAGE_PATTERN,
+  CLAUDE_PERMISSION_MESSAGE_PATTERN,
   REQUEST_SCHEMA_CLASSIFICATION,
 } from "../config/errorConfig.js";
+import { getTargetFormat } from "./provider.js";
+import { FORMATS } from "../translator/formats.js";
 
 function parseJsonErrorText(value) {
   if (typeof value !== "string") return null;
@@ -97,8 +103,30 @@ export function isCodexRequestSchemaError(provider, status, errorValue = "") {
   return metadataAllowsMessageOnly && schemaField && CODEX_REQUEST_SCHEMA_MESSAGE_PATTERN.test(message);
 }
 
+export function isClaudeRequestSchemaErrorForRequest(targetFormat, status, errorValue = "") {
+  if (Number(status) !== 400 || targetFormat !== FORMATS.CLAUDE) return false;
+
+  const error = normalizeErrorPayload(errorValue);
+  const type = String(error?.type || "").toLowerCase();
+  const code = String(error?.code || "").toLowerCase();
+  const message = String(error?.message || (typeof error?.error === "string" ? error.error : ""));
+
+  if (code === "invalid_prompt" || type === "invalid_prompt"
+      || CLAUDE_INVALID_PROMPT_MESSAGE_PATTERN.test(message)) return false;
+  if (type && type !== "invalid_request_error") return false;
+  if (CLAUDE_PERMISSION_MESSAGE_PATTERN.test(message)) return false;
+
+  return CLAUDE_SCHEMA_FIELD_MESSAGE_PATTERN.test(message)
+    || CLAUDE_BETA_HEADER_MESSAGE_PATTERN.test(message);
+}
+
+export function isClaudeRequestSchemaError(provider, status, errorValue = "") {
+  return isClaudeRequestSchemaErrorForRequest(getTargetFormat(provider), status, errorValue);
+}
+
 export function classifyProviderError(provider, status, errorText, backoffLevel = 0) {
-  if (isCodexRequestSchemaError(provider, status, errorText)) {
+  if (isCodexRequestSchemaError(provider, status, errorText)
+      || isClaudeRequestSchemaError(provider, status, errorText)) {
     return { ...REQUEST_SCHEMA_CLASSIFICATION };
   }
   const { shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel);

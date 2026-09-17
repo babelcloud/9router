@@ -325,7 +325,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const classification = classifyProviderError(provider, result.status, result.error);
     if (classification.category === "request_schema") {
       blockedProviders?.add(provider);
-      log.warn("REQUEST", `Non-retryable Codex request schema error (${result.status})`, { provider });
+      log.warn("REQUEST", `Non-retryable request schema error (${result.status})`, { provider });
       return result.upstreamResponse || result.response;
     }
 
