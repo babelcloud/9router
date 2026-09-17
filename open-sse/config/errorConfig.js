@@ -56,6 +56,7 @@ export const CLAUDE_SCHEMA_FIELD_MESSAGE_PATTERN = /(?:^|[\s"'`])(?:[a-z_]\w*(?:
 export const CLAUDE_BETA_HEADER_MESSAGE_PATTERN = /(?:\banthropic[-_ ]beta\b(?:\s+header)?\s*(?::|contains?|has|includes?)\s*(?:an?\s+)?(?:invalid|unsupported|unknown|unrecognized)\s+(?:beta\s+)?(?:value|flag|token|feature|version|name)\b|\b(?:invalid|unsupported|unknown|unrecognized)\s+(?:(?:value|flag|token|feature|version|name)\s+(?:for|in)\s+)?(?:the\s+)?anthropic[-_ ]beta(?:\s+header)?(?:\s+(?:value|flag|token|feature|version|name))?\b)/i;
 export const CLAUDE_INVALID_PROMPT_MESSAGE_PATTERN = /\binvalid[_ ]prompt\b/i;
 export const CLAUDE_PERMISSION_MESSAGE_PATTERN = /(?:\b(?:unauthorized|unauthorised|forbidden|permission|entitlement)\b|\b(?:account|org(?:anization|anisation)?|workspace|subscription|plan|model)\b.{0,80}\b(?:access|permission|entitlement|unsupported|does\s+not\s+have|not\s+(?:allowed|available|enabled|entitled|supported))\b|\b(?:access|permission|entitlement|unsupported|does\s+not\s+have|not\s+(?:allowed|available|enabled|entitled|supported))\b.{0,80}\b(?:account|org(?:anization|anisation)?|workspace|subscription|plan|model)\b)/i;
+export const OPENAI_COMPATIBLE_UNSUPPORTED_PARAMS_MESSAGE_PATTERN = /\blitellm\.UnsupportedParamsError\b|\bdoes not support parameters:\s*\[/i;
 
 export const REQUEST_SCHEMA_CLASSIFICATION = Object.freeze({
   category: "request_schema",
