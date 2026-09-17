@@ -11,6 +11,7 @@ import {
   CLAUDE_BETA_HEADER_MESSAGE_PATTERN,
   CLAUDE_INVALID_PROMPT_MESSAGE_PATTERN,
   CLAUDE_PERMISSION_MESSAGE_PATTERN,
+  OPENAI_COMPATIBLE_UNSUPPORTED_PARAMS_MESSAGE_PATTERN,
   REQUEST_SCHEMA_CLASSIFICATION,
 } from "../config/errorConfig.js";
 import { getTargetFormat } from "./provider.js";
@@ -124,9 +125,19 @@ export function isClaudeRequestSchemaError(provider, status, errorValue = "") {
   return isClaudeRequestSchemaErrorForRequest(getTargetFormat(provider), status, errorValue);
 }
 
+export function isOpenAICompatibleRequestSchemaError(provider, status, errorValue = "") {
+  if (Number(status) !== 400) return false;
+  if (typeof provider !== "string" || !provider.startsWith("openai-compatible-")) return false;
+
+  const error = normalizeErrorPayload(errorValue);
+  const message = String(error?.message || (typeof error?.error === "string" ? error.error : ""));
+  return OPENAI_COMPATIBLE_UNSUPPORTED_PARAMS_MESSAGE_PATTERN.test(message);
+}
+
 export function classifyProviderError(provider, status, errorText, backoffLevel = 0) {
   if (isCodexRequestSchemaError(provider, status, errorText)
-      || isClaudeRequestSchemaError(provider, status, errorText)) {
+      || isClaudeRequestSchemaError(provider, status, errorText)
+      || isOpenAICompatibleRequestSchemaError(provider, status, errorText)) {
     return { ...REQUEST_SCHEMA_CLASSIFICATION };
   }
   const { shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel);
