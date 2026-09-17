@@ -27,12 +27,29 @@ const STRIP_RULES = [
     match: /^(?:gpt-5\.5|gpt-5\.6-(?:sol|terra|luna))(?:\([^()]+\))?$/i,
     rename: { max_tokens: "max_completion_tokens" },
   },
+  // Custom OpenAI-compatible nodes (LiteLLM / Bedrock) reject OpenAI prompt caching.
+  // Official openai/codex keep prompt_cache_key.
+  {
+    provider: (p) => typeof p === "string" && p.startsWith("openai-compatible-"),
+    drop: ["prompt_cache_key"],
+  },
 ];
+
+function matchesValue(matcher, value) {
+  if (!matcher) return true;
+  return typeof matcher === "function" ? matcher(value) : matcher.test(value);
+}
+
+function matchesProvider(rule, provider) {
+  if (!rule.provider) return true;
+  return typeof rule.provider === "function"
+    ? rule.provider(provider)
+    : rule.provider === provider;
+}
 
 // Test a rule's match (regex or predicate) against the model id.
 function matches(rule, model) {
-  if (!rule.match) return true;
-  return typeof rule.match === "function" ? rule.match(model) : rule.match.test(model);
+  return matchesValue(rule.match, model);
 }
 
 function clampNumber(body, key, ceiling) {
@@ -45,7 +62,7 @@ function clampNumber(body, key, ceiling) {
 export function stripUnsupportedParams(provider, model, body) {
   if (!model || !body || typeof body !== "object") return body;
   for (const rule of STRIP_RULES) {
-    if (rule.provider && rule.provider !== provider) continue;
+    if (!matchesProvider(rule, provider)) continue;
     if (!matches(rule, model)) continue;
     for (const key of rule.drop || []) {
       if (body[key] !== undefined) delete body[key];

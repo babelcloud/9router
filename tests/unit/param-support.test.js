@@ -165,4 +165,56 @@ describe("stripUnsupportedParams", () => {
       expect(transformed).not.toHaveProperty("max_output_tokens");
     });
   });
+
+  describe("OpenAI-compatible prompt_cache_key", () => {
+      const RESPONSES_ID = "openai-compatible-responses-ce56549-a10f-4574-ac9f-f6cdee4291c";
+      const CHAT_ID = "openai-compatible-chat-3d8d3de8-1206-47ee-a42f-22113a5f2387";
+
+      it.each([
+        [RESPONSES_ID, "gpt-6-astra"],
+        [RESPONSES_ID, "gpt-5.6-luna"],
+        [CHAT_ID, "gpt-5.6-luna"],
+      ])("drops prompt_cache_key for %s/%s", (provider, model) => {
+        const body = {
+          input: [{ type: "message", role: "user", content: "hello" }],
+          prompt_cache_key: "stable-cache-key",
+          store: false,
+        };
+
+        stripUnsupportedParams(provider, model, body);
+
+        expect(body).not.toHaveProperty("prompt_cache_key");
+        expect(body.store).toBe(false);
+      });
+
+      it("keeps prompt_cache_key on official OpenAI", () => {
+        const body = { prompt_cache_key: "stable-cache-key" };
+
+        stripUnsupportedParams("openai", "gpt-5.6-luna", body);
+
+        expect(body.prompt_cache_key).toBe("stable-cache-key");
+      });
+
+      it("keeps prompt_cache_key on Codex", () => {
+        const body = { prompt_cache_key: "stable-cache-key" };
+
+        stripUnsupportedParams("codex", "gpt-5.6-sol", body);
+
+        expect(body.prompt_cache_key).toBe("stable-cache-key");
+      });
+
+      it("runs through DefaultExecutor before dispatch", () => {
+        const executor = new DefaultExecutor(RESPONSES_ID);
+
+        const transformed = executor.transformRequest("gpt-6-astra", {
+          input: [{ type: "message", role: "user", content: "hello" }],
+          prompt_cache_key: "stable-cache-key",
+        });
+
+        expect(transformed).not.toHaveProperty("prompt_cache_key");
+        expect(transformed.input).toEqual([
+          { type: "message", role: "user", content: "hello" },
+        ]);
+      });
+  });
 });
