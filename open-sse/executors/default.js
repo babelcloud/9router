@@ -1,6 +1,6 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS, PROVIDER_OAUTH } from "../config/providers.js";
-import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE, selectAnthropicBeta } from "../providers/shared.js";
+import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE, selectAnthropicBeta, mergeAnthropicBeta, getClientAnthropicBeta } from "../providers/shared.js";
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
 import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
 import { buildClineHeaders } from "../shared/clineAuth.js";
@@ -154,14 +154,29 @@ export class DefaultExecutor extends BaseExecutor {
     for (const hook of desc.hooks || []) HEADER_HOOKS[hook]?.(headers, credentials);
     applyAuth(headers, desc, credentials);
 
-    if (this.provider === "claude" && model) {
-      headers["Anthropic-Beta"] = selectAnthropicBeta(model);
+    // Official Anthropic must keep 9Router's required betas and any client
+    // betas that unlock request-body fields (e.g. cache-diagnosis-2026-04-07
+    // for top-level `diagnostics`). Overwriting Anthropic-Beta drops those
+    // client flags and upstream answers HTTP 400
+    // "diagnostics: Extra inputs are not permitted".
+    const clientBeta = getClientAnthropicBeta(credentials?.rawHeaders);
+    const isClaudeProvider = this.provider === "claude";
+    const isAnthropicProvider = this.provider === "anthropic";
+    const isAnthropicCompatible = this.provider?.startsWith?.("anthropic-compatible-");
+    const compatibleBaseUrl = credentials?.providerSpecificData?.baseUrl || "";
+    const isOfficialAnthropic = !isAnthropicCompatible
+      || compatibleBaseUrl === ""
+      || compatibleBaseUrl.includes("api.anthropic.com");
+    if (isClaudeProvider) {
+      headers["Anthropic-Beta"] = model
+        ? selectAnthropicBeta(model, clientBeta)
+        : mergeAnthropicBeta(headers["Anthropic-Beta"], clientBeta);
+    } else if ((isAnthropicProvider || isAnthropicCompatible) && isOfficialAnthropic) {
+      headers["Anthropic-Beta"] = mergeAnthropicBeta(headers["Anthropic-Beta"], clientBeta);
     }
 
     // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible upstreams
-    if (this.provider?.startsWith?.("anthropic-compatible-")) {
-      const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
-      const isOfficialAnthropic = baseUrl === "" || baseUrl.includes("api.anthropic.com");
+    if (isAnthropicCompatible) {
       if (!isOfficialAnthropic) {
         // Some third-party Anthropic-compatible gateways require Bearer auth in
         // addition to x-api-key. Send both (x-api-key already set above) so

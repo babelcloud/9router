@@ -37,6 +37,7 @@ describe("DefaultExecutor.buildHeaders() — claude provider", () => {
     const betaFlags = headers["Anthropic-Beta"].split(",").map(s => s.trim());
     expect(betaFlags).toContain("advanced-tool-use-2025-11-20");
     expect(betaFlags).toContain("effort-2025-11-24");
+    expect(betaFlags).toContain("cache-diagnosis-2026-04-07");
   });
 
   it("includes heavy-agent beta flags for claude-sonnet-5", () => {
@@ -54,6 +55,7 @@ describe("DefaultExecutor.buildHeaders() — claude provider", () => {
     expect(betaFlags).not.toContain("advanced-tool-use-2025-11-20");
     expect(betaFlags).not.toContain("effort-2025-11-24");
     expect(betaFlags).toContain("claude-code-20250219");
+    expect(betaFlags).toContain("cache-diagnosis-2026-04-07");
   });
 
   it("omits heavy-agent beta flags for claude-fable-5", () => {
@@ -94,6 +96,26 @@ describe("DefaultExecutor.buildHeaders() — claude provider", () => {
     const executor = new DefaultExecutor("claude");
     expect(() => executor.buildHeaders({ apiKey: "sk" }, false)).not.toThrow();
   });
+
+  it("merges client cache-diagnosis beta with the model-gated fingerprint", () => {
+    const executor = new DefaultExecutor("claude");
+    const headers = executor.buildHeaders(
+      {
+        apiKey: "sk-test",
+        rawHeaders: {
+          "anthropic-beta": "cache-diagnosis-2026-04-07,future-beta-2099-01-01",
+        },
+      },
+      true,
+      undefined,
+      "claude-opus-5"
+    );
+    const betaFlags = headers["Anthropic-Beta"].split(",").map(s => s.trim());
+    expect(betaFlags).toContain("context-management-2025-06-27");
+    expect(betaFlags).toContain("cache-diagnosis-2026-04-07");
+    expect(betaFlags).toContain("future-beta-2099-01-01");
+    expect(betaFlags.filter(f => f === "cache-diagnosis-2026-04-07")).toHaveLength(1);
+  });
 });
 
 describe("DefaultExecutor.buildHeaders() — anthropic provider", () => {
@@ -104,6 +126,22 @@ describe("DefaultExecutor.buildHeaders() — anthropic provider", () => {
     const betaFlags = headers["Anthropic-Beta"].split(",").map(s => s.trim());
 
     expect(betaFlags).toContain("context-management-2025-06-27");
+    expect(betaFlags).toContain("cache-diagnosis-2026-04-07");
+  });
+
+  it("merges client betas onto the official Anthropic provider", async () => {
+    const mod = await import("open-sse/executors/default.js");
+    const DefaultExecutor = mod.DefaultExecutor || mod.default;
+    const headers = new DefaultExecutor("anthropic").buildHeaders(
+      {
+        apiKey: "sk-test",
+        rawHeaders: { "Anthropic-Beta": "cache-diagnosis-2026-04-07" },
+      },
+      true
+    );
+    const betaFlags = headers["Anthropic-Beta"].split(",").map(s => s.trim());
+    expect(betaFlags).toContain("context-management-2025-06-27");
+    expect(betaFlags).toContain("cache-diagnosis-2026-04-07");
   });
 });
 
@@ -196,6 +234,34 @@ describe("DefaultExecutor.buildHeaders() — anthropic-compatible stripping", ()
     const hasVersion =
       headers["Anthropic-Version"] || headers["anthropic-version"];
     expect(hasVersion).toBeDefined();
+  });
+
+  it("merges client cache-diagnosis beta for official Anthropic-compatible hosts", () => {
+    const executor = new DefaultExecutor("anthropic-compatible-official");
+    const headers = executor.buildHeaders(
+      {
+        apiKey: "key",
+        rawHeaders: { "anthropic-beta": "cache-diagnosis-2026-04-07" },
+        providerSpecificData: { baseUrl: "https://api.anthropic.com/v1" },
+      },
+      true
+    );
+    const betaVal = headers["anthropic-beta"] || headers["Anthropic-Beta"] || "";
+    expect(betaVal).toContain("cache-diagnosis-2026-04-07");
+  });
+
+  it("does not merge unknown client betas onto a non-Anthropic host", () => {
+    const executor = new DefaultExecutor("anthropic-compatible-custom");
+    const headers = executor.buildHeaders(
+      {
+        apiKey: "key",
+        rawHeaders: { "anthropic-beta": "cache-diagnosis-2026-04-07" },
+        providerSpecificData: { baseUrl: "https://myproxy.example.com/v1" },
+      },
+      true
+    );
+    const betaVal = headers["anthropic-beta"] || headers["Anthropic-Beta"] || "";
+    expect(betaVal).not.toContain("cache-diagnosis-2026-04-07");
   });
 });
 
