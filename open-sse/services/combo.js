@@ -679,6 +679,18 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   });
   const settled = await collectPanel(calls, { ...cfg, minPanel });
   acceptingPanelCalls = false;
+  const busyPanelProviders = new Set();
+  const busyPanelModels = new Set();
+  let unknownProviderQueueBusy = false;
+  for (let i = 0; i < providers.length; i++) {
+    if ((i in settled) && !settled[i]?.__timeout) continue;
+    busyPanelModels.add(panel[i]);
+    if (providers[i]) busyPanelProviders.add(providers[i]);
+    else if (resolveModelProvider) unknownProviderQueueBusy = true;
+  }
+  const isPanelProviderBusy = (model, provider) => provider
+    ? busyPanelProviders.has(provider)
+    : busyPanelModels.has(model) || unknownProviderQueueBusy;
   log.info("FUSION", `fan-out collected in ${Date.now() - t0}ms`);
 
   // 2. Collect successful answers.
@@ -717,8 +729,14 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   if (answers.length === 1) {
     log.info("FUSION", `Only ${answers[0].model} succeeded — answering directly (no fusion)`);
     const answerProvider = await resolveProvider(answers[0].model);
-    if (answerProvider && blockedProviders.has(answerProvider)) return answers[0].response;
-    const result = await enqueueProviderCall(answerProvider, Symbol("unknown-provider"), () => {
+    if (
+      (answerProvider && blockedProviders.has(answerProvider))
+      || isPanelProviderBusy(answers[0].model, answerProvider)
+    ) {
+      return answers[0].response;
+    }
+    const answerUnknownKey = resolveModelProvider ? unknownProviderQueue : Symbol("unknown-provider");
+    const result = await enqueueProviderCall(answerProvider, answerUnknownKey, () => {
       if (answerProvider && blockedProviders.has(answerProvider)) return null;
       return handleSingleModel(body, answers[0].model, undefined, blockedProviders, providerTails);
     });
@@ -730,16 +748,27 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   const judgeCandidates = [judge, ...answers.map(({ model }) => model)];
   const attemptedProviders = new Set();
   const attemptedModels = new Set();
+  let judgeAttempted = false;
+  let busyJudgeCandidate = false;
   for (const candidate of judgeCandidates) {
     if (attemptedModels.has(candidate)) continue;
     attemptedModels.add(candidate);
     const provider = await resolveProvider(candidate);
-    if (provider && (blockedProviders.has(provider) || attemptedProviders.has(provider))) continue;
+    if (provider && (
+      blockedProviders.has(provider)
+      || attemptedProviders.has(provider)
+    )) continue;
+    if (isPanelProviderBusy(candidate, provider)) {
+      busyJudgeCandidate = true;
+      continue;
+    }
     if (provider) attemptedProviders.add(provider);
 
     log.info("FUSION", `Judging ${answers.length} answers with ${candidate}`);
+    judgeAttempted = true;
     const blockedBefore = new Set(blockedProviders);
-    const result = await enqueueProviderCall(provider, Symbol("unknown-provider"), () => {
+    const judgeUnknownKey = resolveModelProvider ? unknownProviderQueue : Symbol("unknown-provider");
+    const result = await enqueueProviderCall(provider, judgeUnknownKey, () => {
       if (provider && blockedProviders.has(provider)) return null;
       return handleSingleModel(judgeBody, candidate, undefined, blockedProviders, providerTails);
     });
@@ -748,5 +777,6 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
     const isSchemaFailure = await recordSchemaFailure(result, provider, blockedBefore);
     if (!isSchemaFailure) return result;
   }
+  if (!judgeAttempted && busyJudgeCandidate) return answers[0].response;
   return requestSchemaResponse || answers[0].response;
 }
