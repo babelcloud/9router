@@ -141,7 +141,7 @@ export class BaseExecutor {
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
       const url = this.buildUrl(model, stream, urlIndex, credentials);
       const transformedBody = this.transformRequest(model, body, stream, credentials);
-      const headers = this.buildHeaders(credentials, stream, url, model);
+      const headers = this.buildHeaders(credentials, stream, url, model, transformedBody);
       if (transformedBody?.thinking?.display === "summarized") {
         removeBetaFlag(headers, "redact-thinking-2026-02-12");
       }

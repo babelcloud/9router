@@ -102,7 +102,13 @@ describe("BaseExecutor.execute — Anthropic summarized thinking headers", () =>
     expect(betaFlags).toContain("advanced-tool-use-2025-11-20");
     expect(betaFlags).toContain("effort-2025-11-24");
     expect(betaFlags).not.toContain("redact-thinking-2026-02-12");
-    expect(buildHeaders).toHaveBeenCalledWith(creds, false, expect.any(String), "claude-opus-5");
+    expect(buildHeaders).toHaveBeenCalledWith(
+      creds,
+      false,
+      expect.any(String),
+      "claude-opus-5",
+      expect.objectContaining({ thinking: { type: "adaptive", display: "summarized" } }),
+    );
   });
 
   it("removes redact-thinking beta when summarized thinking is requested", async () => {

@@ -9,6 +9,7 @@ import {
   CODEX_ITEM_ID_MESSAGE_PATTERN,
   CLAUDE_SCHEMA_FIELD_MESSAGE_PATTERN,
   CLAUDE_BETA_HEADER_MESSAGE_PATTERN,
+  CLAUDE_BETA_ENTITLEMENT_MESSAGE_PATTERN,
   CLAUDE_INVALID_PROMPT_MESSAGE_PATTERN,
   CLAUDE_PERMISSION_MESSAGE_PATTERN,
   OPENAI_COMPATIBLE_UNSUPPORTED_PARAMS_MESSAGE_PATTERN,
@@ -116,6 +117,7 @@ export function isClaudeRequestSchemaErrorForRequest(targetFormat, status, error
       || CLAUDE_INVALID_PROMPT_MESSAGE_PATTERN.test(message)) return false;
   if (type && type !== "invalid_request_error") return false;
   if (CLAUDE_PERMISSION_MESSAGE_PATTERN.test(message)) return false;
+  if (CLAUDE_BETA_ENTITLEMENT_MESSAGE_PATTERN.test(message)) return false;
 
   return CLAUDE_SCHEMA_FIELD_MESSAGE_PATTERN.test(message)
     || CLAUDE_BETA_HEADER_MESSAGE_PATTERN.test(message);
@@ -193,6 +195,20 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
       }
       return { shouldFallback: true, cooldownMs: rule.cooldownMs };
     }
+  }
+
+  // Request-scoped client errors that matched no rule above: a 400 caused by the
+  // request itself (context overflow, malformed body, unsupported parameter) says
+  // nothing about the credential, so cooling the account down only removes a
+  // healthy connection from rotation. With a single connection it is worse: every
+  // later request in the window fails with a copy of this very error
+  // ("all 1 accounts locked for <model> | lastError=[400]: ..."), which hides the
+  // real cause from the caller and makes unrelated sessions look like they hit the
+  // same limit. Hand the upstream error back for this request instead.
+  // Account-scoped statuses keep their rules above (401/402/403/404/429), and the
+  // text rules still win for rate-limit / quota / capacity wording.
+  if (status >= 400 && status < 500 && status !== 401 && status !== 402 && status !== 403 && status !== 429) {
+    return { shouldFallback: false, cooldownMs: 0 };
   }
 
   // Default: transient cooldown for any unmatched error

@@ -12,7 +12,7 @@ const STATELESS_CALL_ITEM_TYPES = new Set([
  * Remove stored references and incompatible item IDs from a stateless Responses replay.
  * call_id remains the correlation key; valid message IDs and other item IDs are preserved.
  */
-export function normalizeStatelessResponseInput(input) {
+export function normalizeStatelessResponseInput(input, { preserveLiteMsgPrefix = false } = {}) {
   if (!Array.isArray(input)) return input;
 
   return input.flatMap((item) => {
@@ -20,6 +20,11 @@ export function normalizeStatelessResponseInput(input) {
     if (!item || typeof item !== "object" || Array.isArray(item)) return [item];
     if (item.type === RESPONSES_ITEM.ITEM_REFERENCE) return [];
     if (!Object.hasOwn(item, "id")) return [item];
+    const keepLiteDeveloperMsg = preserveLiteMsgPrefix
+      && item.role === ROLE.DEVELOPER
+      && typeof item.id === "string"
+      && item.id.startsWith("msg_");
+    if (keepLiteDeveloperMsg) return [item];
     const hasInvalidMessageId = item.type === RESPONSES_ITEM.MESSAGE
       && (typeof item.id !== "string" || !item.id.startsWith("msg"));
     if (!STATELESS_CALL_ITEM_TYPES.has(item.type) && !hasInvalidMessageId) return [item];

@@ -7,6 +7,7 @@ import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
+import { extractClaudeSessionIdFromUserId } from "../utils/claudeCloaking.js";
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -146,7 +147,7 @@ export class DefaultExecutor extends BaseExecutor {
     return BEARER;
   }
 
-  buildHeaders(credentials, stream = true, url, model) {
+  buildHeaders(credentials, stream = true, url, model, body = null) {
     const rt = credentials?.runtimeTransport;
     const headers = { "Content-Type": "application/json", ...(rt ? rt.headers : this.config.headers) };
     const desc = rt?.auth || AUTH_DESCRIPTORS[this.provider] || this.resolveAuthDescriptor();
@@ -170,16 +171,25 @@ export class DefaultExecutor extends BaseExecutor {
       || compatibleBaseUrl.includes("api.anthropic.com");
     if (this.provider === "claude") {
       headers["Anthropic-Beta"] = model
-        ? selectAnthropicBeta(model, clientBeta)
+        ? mergeAnthropicBeta(selectAnthropicBeta(model, body), clientBeta)
         : mergeAnthropicBeta(headers["Anthropic-Beta"], clientBeta);
     } else if (this.provider === "anthropic") {
       headers["Anthropic-Beta"] = mergeAnthropicBeta(headers["Anthropic-Beta"], clientBeta);
     } else if (isAnthropicCompatible && isOfficialAnthropic) {
       headers["Anthropic-Beta"] = isClaudeModel && model
-        ? selectAnthropicBeta(model, clientBeta)
+        ? mergeAnthropicBeta(selectAnthropicBeta(model, body), clientBeta)
         : mergeAnthropicBeta(headers["Anthropic-Beta"], clientBeta);
     } else if (isAnthropicCompatible && isClaudeModel && model) {
-      headers["Anthropic-Beta"] = selectAnthropicBeta(model);
+      headers["Anthropic-Beta"] = mergeAnthropicBeta(selectAnthropicBeta(model, body), clientBeta);
+    }
+
+    // Claude OAuth: align x-claude-code-session-id with metadata.user_id.session_id if missing
+    if (this.provider === "claude" && !headers["x-claude-code-session-id"]) {
+      const token = credentials?.accessToken || credentials?.apiKey || "";
+      if (token.includes("sk-ant-oat")) {
+        const sid = extractClaudeSessionIdFromUserId(body?.metadata?.user_id);
+        if (sid) headers["x-claude-code-session-id"] = sid;
+      }
     }
 
     // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible upstreams

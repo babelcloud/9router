@@ -145,15 +145,20 @@ describe("Claude request schema classification", () => {
     "Unsupported anthropic-beta header value for this account",
     "The anthropic-beta header value is not enabled for this organization",
     "Model claude-opus-5 does not have access to this anthropic-beta header value",
-  ])("keeps beta permission errors on normal account fallback: %s", message => {
+  ])("does not lock an account for a beta entitlement 400: %s", message => {
+    // Request-scoped 4xx no longer cools a credential (upstream 0.5.79).
+    // These stay out of request_schema so a real account-scoped status can still rotate.
     expect(classifyProviderError("claude", 400, {
       error: { type: "invalid_request_error", message },
     })).toEqual({
       category: "provider_error",
-      accountFallback: true,
-      cooldownMs: 30000,
+      accountFallback: false,
+      cooldownMs: 0,
       comboScope: "model",
     });
+    expect(isClaudeRequestSchemaError("claude", 400, {
+      error: { type: "invalid_request_error", message },
+    })).toBe(false);
   });
 });
 

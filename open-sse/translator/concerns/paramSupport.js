@@ -33,6 +33,15 @@ const STRIP_RULES = [
     provider: (p) => typeof p === "string" && p.startsWith("openai-compatible-"),
     drop: ["prompt_cache_key"],
   },
+  // Strict OpenAI-compatible validators reject unknown assistant-message fields.
+  // Clients that talk to reasoning models (e.g. Hermes) echo the prior turn's
+  // reasoning back on every assistant message; Groq answers 400 and Mistral 422
+  // ("extra_forbidden") on it, which knocks these providers out of every
+  // multi-turn combo. Providers that *require* the field (DeepSeek, Kimi) are
+  // handled by reasoningContentInjector and are not listed here.
+  { provider: "groq", dropMessageFields: ["reasoning_content", "reasoning", "reasoning_details"] },
+  { provider: "mistral", dropMessageFields: ["reasoning_content", "reasoning", "reasoning_details"] },
+  { provider: "cerebras", dropMessageFields: ["reasoning_content", "reasoning", "reasoning_details"] },
 ];
 
 function matchesValue(matcher, value) {
@@ -71,6 +80,15 @@ export function stripUnsupportedParams(provider, model, body) {
       if (body[source] === undefined || source === target) continue;
       if (body[target] === undefined) body[target] = body[source];
       delete body[source];
+    }
+    // Per-message field drop (assistant turns only — that is where clients replay reasoning).
+    if (Array.isArray(rule.dropMessageFields) && Array.isArray(body.messages)) {
+      for (const msg of body.messages) {
+        if (!msg || msg.role !== "assistant") continue;
+        for (const key of rule.dropMessageFields) {
+          if (msg[key] !== undefined) delete msg[key];
+        }
+      }
     }
     // CF Workers AI oneOf root schema only accepts content as plain string (#1926)
     if (rule.flattenContent && Array.isArray(body.messages)) {
