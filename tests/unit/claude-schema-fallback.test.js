@@ -155,6 +155,7 @@ describe("Claude request schema classification", () => {
       accountFallback: false,
       cooldownMs: 0,
       comboScope: "model",
+      requestScoped: true,
     });
     expect(isClaudeRequestSchemaError("claude", 400, {
       error: { type: "invalid_request_error", message },
