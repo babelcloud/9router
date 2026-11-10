@@ -3,6 +3,7 @@ import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/con
 import { formatRetryAfter, classifyProviderError, isModelLockActive, buildModelLockUpdate, getModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
+import { getAntigravityQuotaCache, getAntigravityModelQuota } from "./antigravityQuota.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -30,6 +31,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
+  const requestedModel = options?.requestedModel || model;
   // Acquire mutex to prevent race conditions
   const currentMutex = selectionMutex;
   let resolveMutex;
@@ -64,6 +66,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           connectionNoProxy: resolvedProxy.connectionNoProxy,
           connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
           vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
+          strictProxy: resolvedProxy.strictProxy === true,
         },
       };
     }
@@ -76,10 +79,26 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    // Filter out model-locked and excluded connections
+    // Antigravity quota cache is lazy: only populated after that account returns 409/429.
+    const isAntigravity = providerId === "antigravity";
+    const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
+
+    // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
+      const enabled = c.providerSpecificData?.enabledModels;
+      if (providerId === "codex" && Array.isArray(enabled) && enabled.length && requestedModel && !enabled.includes(requestedModel)) return false;
+      // Antigravity: skip if live quota exhausted for this model
+      if (isAntigravity && model && antigravityQuotaCache) {
+        const connQuotas = antigravityQuotaCache.get(c.id);
+        const quota = getAntigravityModelQuota(connQuotas, model) || connQuotas?.[model];
+        if (quota && quota.remainingPercentage <= 0 && quota.resetAt && new Date(quota.resetAt).getTime() > Date.now()) {
+          const account = c.id?.slice(0, 8) || "unknown";
+          log.info("AG_QUOTA", `${account} | CACHE_BLOCK ${model} — skip upstream until ${quota.resetAt}`);
+          return false;
+        }
+      }
       return true;
     });
 
@@ -94,8 +113,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     });
 
     if (availableConnections.length === 0) {
-      // Find earliest lock expiry across all connections for retry timing
+      // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
       const expiries = connections.map(c => getModelLockUntil(c, model)).filter(Boolean);
+      if (isAntigravity && model && antigravityQuotaCache) {
+        connections.forEach((c) => {
+          const connQuotas = antigravityQuotaCache.get(c.id);
+          const quota = getAntigravityModelQuota(connQuotas, model) || connQuotas?.[model];
+          const resetAt = quota?.resetAt;
+          if (quota?.remainingPercentage <= 0 && resetAt && new Date(resetAt).getTime() > Date.now()) expiries.push(resetAt);
+        });
+      }
       const earliest = expiries.sort()[0] || null;
       if (earliest) {
         log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)})`);
@@ -189,6 +216,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connectionNoProxy: resolvedProxy.connectionNoProxy,
         connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
         vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
+        strictProxy: resolvedProxy.strictProxy === true,
       },
       connectionId: connection.id,
       // Include current status for optimization check
@@ -214,7 +242,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  */
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
-  const preliminaryClassification = classifyProviderError(provider, status, errorText);
+  const preliminaryClassification = classifyProviderError(resolveProviderId(provider), status, errorText);
   if (preliminaryClassification.category === "request_schema") {
     return { shouldFallback: false, cooldownMs: 0 };
   }
@@ -233,19 +261,22 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     newBackoffLevel = 0;
   } else if (resetsAtMs && resetsAtMs > Date.now()) {
     shouldFallback = true;
-    cooldownMs = Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
+    // Antigravity quota API provides exact per-model resetAt. Do not truncate it.
+    cooldownMs = resolveProviderId(provider) === "antigravity"
+      ? resetsAtMs - Date.now()
+      : Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
     newBackoffLevel = 0;
   } else {
     const classification = backoffLevel === 0
       ? preliminaryClassification
-      : classifyProviderError(provider, status, errorText, backoffLevel);
+      : classifyProviderError(resolveProviderId(provider), status, errorText, backoffLevel);
     shouldFallback = classification.accountFallback;
     cooldownMs = classification.cooldownMs;
     newBackoffLevel = classification.newBackoffLevel;
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
-  const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
+  const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Provider error";
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
 
   await updateProviderConnection(connectionId, {

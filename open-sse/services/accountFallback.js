@@ -9,6 +9,7 @@ import {
   CODEX_ITEM_ID_MESSAGE_PATTERN,
   CLAUDE_SCHEMA_FIELD_MESSAGE_PATTERN,
   CLAUDE_BETA_HEADER_MESSAGE_PATTERN,
+  CLAUDE_BETA_ENTITLEMENT_MESSAGE_PATTERN,
   CLAUDE_INVALID_PROMPT_MESSAGE_PATTERN,
   CLAUDE_PERMISSION_MESSAGE_PATTERN,
   OPENAI_COMPATIBLE_UNSUPPORTED_PARAMS_MESSAGE_PATTERN,
@@ -116,6 +117,7 @@ export function isClaudeRequestSchemaErrorForRequest(targetFormat, status, error
       || CLAUDE_INVALID_PROMPT_MESSAGE_PATTERN.test(message)) return false;
   if (type && type !== "invalid_request_error") return false;
   if (CLAUDE_PERMISSION_MESSAGE_PATTERN.test(message)) return false;
+  if (CLAUDE_BETA_ENTITLEMENT_MESSAGE_PATTERN.test(message)) return false;
 
   return CLAUDE_SCHEMA_FIELD_MESSAGE_PATTERN.test(message)
     || CLAUDE_BETA_HEADER_MESSAGE_PATTERN.test(message);
@@ -140,12 +142,13 @@ export function classifyProviderError(provider, status, errorText, backoffLevel 
       || isOpenAICompatibleRequestSchemaError(provider, status, errorText)) {
     return { ...REQUEST_SCHEMA_CLASSIFICATION };
   }
-  const { shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel);
+  const { shouldFallback, cooldownMs, newBackoffLevel, requestScoped } = checkFallbackError(status, errorText, backoffLevel, provider);
   return {
     category: "provider_error",
     accountFallback: shouldFallback,
     cooldownMs,
     comboScope: "model",
+    ...(requestScoped ? { requestScoped } : {}),
     ...(newBackoffLevel === undefined ? {} : { newBackoffLevel }),
   };
 }
@@ -168,14 +171,21 @@ export function getQuotaCooldown(backoffLevel = 0) {
  * @param {number} status - HTTP status code
  * @param {string} errorText - Error message text
  * @param {number} backoffLevel - Current backoff level for exponential backoff
- * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number }}
+ * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number, requestScoped?: boolean }}
+ *
+ * `shouldFallback` answers "is the CREDENTIAL at fault?" (account rotation).
+ * `requestScoped` answers "is the REQUEST itself what this member rejected?"
+ * (combo rotation). They are different questions: a context overflow or a
+ * validation 400 means the credential is healthy but this member cannot serve
+ * this request, so combo rotation must still try the next member.
  */
-export function checkFallbackError(status, errorText, backoffLevel = 0) {
+export function checkFallbackError(status, errorText, backoffLevel = 0, provider = null) {
   const lowerError = errorText
     ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
     : "";
 
   for (const rule of ERROR_RULES) {
+    if (rule.provider && rule.provider !== provider) continue;
     // Text-based rule: match substring in error message
     if (rule.text && lowerError && lowerError.includes(rule.text)) {
       if (rule.backoff) {
@@ -193,6 +203,20 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
       }
       return { shouldFallback: true, cooldownMs: rule.cooldownMs };
     }
+  }
+
+  // Request-scoped client errors that matched no rule above: a 400 caused by the
+  // request itself (context overflow, malformed body, unsupported parameter) says
+  // nothing about the credential, so cooling the account down only removes a
+  // healthy connection from rotation. With a single connection it is worse: every
+  // later request in the window fails with a copy of this very error
+  // ("all 1 accounts locked for <model> | lastError=[400]: ..."), which hides the
+  // real cause from the caller and makes unrelated sessions look like they hit the
+  // same limit. Hand the upstream error back for this request instead.
+  // Account-scoped statuses keep their rules above (401/402/403/404/429), and the
+  // text rules still win for rate-limit / quota / capacity wording.
+  if (status >= 400 && status < 500 && status !== 401 && status !== 402 && status !== 403 && status !== 429) {
+    return { shouldFallback: false, cooldownMs: 0, requestScoped: true };
   }
 
   // Default: transient cooldown for any unmatched error

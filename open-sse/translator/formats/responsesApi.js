@@ -12,7 +12,7 @@ const STATELESS_CALL_ITEM_TYPES = new Set([
  * Remove stored references and incompatible item IDs from a stateless Responses replay.
  * call_id remains the correlation key; valid message IDs and other item IDs are preserved.
  */
-export function normalizeStatelessResponseInput(input) {
+export function normalizeStatelessResponseInput(input, { preserveLiteMsgPrefix = false } = {}) {
   if (!Array.isArray(input)) return input;
 
   return input.flatMap((item) => {
@@ -20,6 +20,11 @@ export function normalizeStatelessResponseInput(input) {
     if (!item || typeof item !== "object" || Array.isArray(item)) return [item];
     if (item.type === RESPONSES_ITEM.ITEM_REFERENCE) return [];
     if (!Object.hasOwn(item, "id")) return [item];
+    const keepLiteDeveloperMsg = preserveLiteMsgPrefix
+      && item.role === ROLE.DEVELOPER
+      && typeof item.id === "string"
+      && item.id.startsWith("msg_");
+    if (keepLiteDeveloperMsg) return [item];
     const hasInvalidMessageId = item.type === RESPONSES_ITEM.MESSAGE
       && (typeof item.id !== "string" || !item.id.startsWith("msg"));
     if (!STATELESS_CALL_ITEM_TYPES.has(item.type) && !hasInvalidMessageId) return [item];
@@ -51,6 +56,59 @@ export function normalizeResponsesInput(input) {
     return input;
   }
   return null;
+}
+
+// Strict Responses upstreams reject overlong call_ids with InputValidationError (#393).
+export const MAX_RESPONSES_CALL_ID_LEN = 64;
+
+// Fallback ids share one Date.now() when a batch of items is sanitized in a tight
+// loop — a per-process sequence keeps same-millisecond ids unique so
+// function_call ↔ function_call_output correlation never collides.
+let responsesCallIdSeq = 0;
+
+export function clampResponsesCallId(id) {
+  if (typeof id !== "string" || !id) return `call_${Date.now()}_${(responsesCallIdSeq += 1)}`;
+  return id.length > MAX_RESPONSES_CALL_ID_LEN ? id.substring(0, MAX_RESPONSES_CALL_ID_LEN) : id;
+}
+
+// Single-stringify: objects → JSON once; valid JSON strings pass through untouched;
+// anything else (partial fragments, empty) falls back to "{}" instead of
+// double-encoding and tripping upstream InputValidationError.
+export function coerceResponsesArguments(value) {
+  if (value === undefined || value === null || value === "") return "{}";
+  if (typeof value !== "string") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "{}";
+    }
+  }
+  try {
+    JSON.parse(value);
+    return value;
+  } catch {
+    return "{}";
+  }
+}
+
+// function_call_output.output must be a string — never null/object.
+export function coerceResponsesOutput(value) {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  if (Array.isArray(value)) {
+    return value.map((c) => {
+      try {
+        return c?.text ?? JSON.stringify(c);
+      } catch {
+        return String(c);
+      }
+    }).join("");
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 /**
